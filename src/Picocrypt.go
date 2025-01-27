@@ -2,7 +2,7 @@ package main
 
 /*
 
-Picocrypt v1.45
+Picocrypt v1.46
 Copyright (c) Evan Su
 Released under a GNU GPL v3 License
 https://github.com/Picocrypt/Picocrypt
@@ -60,7 +60,7 @@ var TRANSPARENT = color.RGBA{0x00, 0x00, 0x00, 0x00}
 
 // Generic variables
 var window *giu.MasterWindow
-var version = "v1.45"
+var version = "v1.46"
 var dpi float32
 var mode string
 var working bool
@@ -120,7 +120,8 @@ var splitSelected int32 = 1
 var recombine bool
 var compress bool
 var delete bool
-var unpack bool
+var autoUnzip bool
+var sameLevel bool
 var keep bool
 var kept bool
 
@@ -555,8 +556,19 @@ func draw() {
 					).Build()
 
 					giu.Row(
-						giu.Checkbox("Unpack .zip", &unpack),
-						giu.Tooltip("Extract the decrypted .zip (ovewrite files)"),
+						giu.Style().SetDisabled(!strings.HasSuffix(inputFile, ".zip.pcv")).To(
+							giu.Checkbox("Auto unzip", &autoUnzip).OnChange(func() {
+								if !autoUnzip {
+									sameLevel = false
+								}
+							}),
+							giu.Tooltip("Extract .zip upon decryption (may overwrite)"),
+						),
+						giu.Dummy(-170, 0),
+						giu.Style().SetDisabled(!autoUnzip).To(
+							giu.Checkbox("Same level", &sameLevel),
+							giu.Tooltip("Extract .zip contents to same folder as volume"),
+						),
 					).Build()
 				}
 			}),
@@ -2118,29 +2130,21 @@ func work() {
 		os.Remove(inputFile)
 	}
 
-	if mode == "decrypt" && !kept && unpack {
-		showProgress = true // Turn on the progress popup
-		canCancel = true    // Allow the user to cancel
-		progress = 0
-		progressInfo = ""
-		popupStatus = "Preparing to unpack..."
+	if mode == "decrypt" && !kept && autoUnzip {
+		showProgress = true
+		popupStatus = "Unzipping..."
 		giu.Update()
 
-		err := unpackArchive(outputFile)
-		if err != nil {
-			mainStatus = "Extraction failed: " + err.Error()
+		if err := unpackArchive(outputFile); err != nil {
+			mainStatus = "Auto unzipping failed!"
 			mainStatusColor = RED
 			giu.Update()
+			return
 		}
 
-		// Turn off the progress UI
-		showProgress = false
-		canCancel = false
-		progress = 0
-		progressInfo = ""
-		popupStatus = ""
-		giu.Update()
+		os.Remove(outputFile)
 	}
+
 	// All done, reset the UI
 	oldKept := kept
 	resetUI()
@@ -2238,7 +2242,8 @@ func resetUI() {
 	recombine = false
 	compress = false
 	delete = false
-	unpack = false
+	autoUnzip = false
+	sameLevel = false
 	keep = false
 	kept = false
 
@@ -2361,33 +2366,31 @@ func sizeify(size int64) string {
 }
 
 func unpackArchive(zipPath string) error {
-	// Open the .zip
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
 
-	// Calculate total unpack size by summing each entry’s UncompressedSize64
 	var totalSize int64
 	for _, f := range reader.File {
 		totalSize += int64(f.UncompressedSize64)
 	}
 
-	// Directory containing the .zip
-	extractDir := filepath.Dir(zipPath)
+	var extractDir string
+	if sameLevel {
+		extractDir = filepath.Dir(zipPath)
+	} else {
+		extractDir = filepath.Join(filepath.Dir(zipPath), strings.TrimSuffix(filepath.Base(zipPath), ".zip"))
+	}
 
-	// Setup progress tracking
 	var done int64
 	startTime := time.Now()
 
-	// Iterate over each file in the archive
-	for i, f := range reader.File {
-		// If user clicked "Cancel" elsewhere, stop
-		if !working {
-			return errors.New("operation canceled by user")
+	for _, f := range reader.File {
+		if strings.Contains(f.Name, "..") {
+			return errors.New("potentially malicious zip item path")
 		}
-
 		outPath := filepath.Join(extractDir, f.Name)
 
 		// Make directory if current entry is a folder
@@ -2395,8 +2398,20 @@ func unpackArchive(zipPath string) error {
 			if err := os.MkdirAll(outPath, f.Mode()); err != nil {
 				return err
 			}
+		}
+	}
+
+	for i, f := range reader.File {
+		if strings.Contains(f.Name, "..") {
+			return errors.New("potentially malicious zip item path")
+		}
+
+		// Already handled above
+		if f.FileInfo().IsDir() {
 			continue
 		}
+
+		outPath := filepath.Join(extractDir, f.Name)
 
 		// Otherwise create necessary parent directories
 		if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
@@ -2410,20 +2425,14 @@ func unpackArchive(zipPath string) error {
 		}
 		defer fileInArchive.Close()
 
-		// Create/overwrite the destination file
-		dstFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		dstFile, err := os.Create(outPath)
 		if err != nil {
 			return err
 		}
 
 		// Read from zip in chunks to update progress
-		buffer := make([]byte, MiB) // e.g., 1 MiB chunk
+		buffer := make([]byte, MiB)
 		for {
-			if !working {
-				dstFile.Close()
-				os.Remove(outPath) // remove partial extraction if canceled
-				return errors.New("operation canceled by user")
-			}
 			n, readErr := fileInArchive.Read(buffer)
 			if n > 0 {
 				_, writeErr := dstFile.Write(buffer[:n])
@@ -2432,7 +2441,6 @@ func unpackArchive(zipPath string) error {
 					return writeErr
 				}
 
-				// Update "done" and recalc progress, speed, eta
 				done += int64(n)
 				progress, speed, eta = statify(done, totalSize, startTime)
 				progressInfo = fmt.Sprintf("%d/%d", i+1, len(reader.File))
