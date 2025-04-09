@@ -18,7 +18,7 @@ Picocrypt is a very small (hence <i>Pico</i>), very simple, yet very secure encr
 ## Windows
 Picocrypt for Windows is as simple as it gets. To download the latest, standalone, and portable executable for Windows, click <a href="https://github.com/Picocrypt/Picocrypt/releases/latest/download/Picocrypt.exe">here</a>. If Microsoft Defender or your antivirus flags Picocrypt as a virus, please do your part and submit it as a false positive for the betterment of everyone.
 
-If the executable is not launching, you may be missing OpenGL support. See <a href="https://github.com/Picocrypt/Picocrypt/issues/91">here</a> for a solution.
+If you use Picocrypt frequently, you can download an installer <a href="https://github.com/Picocrypt/Picocrypt/releases/download/1.47/Install-Picocrypt.exe">here</a> for easier launching. It does not require any admin permissions to install and it also bundles a software OpenGL renderer for compatibility, so if the portable executable isn't working, this installer likely will.
 
 ## macOS
 Picocrypt for macOS is very simple as well. Download Picocrypt <a href="https://github.com/Picocrypt/Picocrypt/releases/latest/download/Picocrypt.dmg">here</a>, open the container, and drag Picocrypt to your Applications. You may need to manually trust the app from a terminal and control-click on the app if macOS prevents you from opening it:
@@ -37,6 +37,9 @@ A command-line interface is available for Picocrypt <a href="https://github.com/
 
 ## Web
 A functionally limited web app is available <a href="https://picocrypt.github.io/">here</a> which allows you to encrypt and decrypt standard Picocrypt volumes (no advanced features or keyfiles) on any modern browser, including mobile devices. It's a simple, future-proof way to encrypt files that should work indefinitely due to the web's stable nature. Note that you can only encrypt single files up to a maximum size of 1 GiB.
+
+## Mobile
+An experimental project <a href="https://github.com/Picocrypt/PicoGo">PicoGo</a> is a community-developed port of Picocrypt to platforms like Android and iOS using the Fyne GUI library. Feel free to try it out, but keep in mind that it is not part of the official core Picocrypt project (like the platforms listed above) and thus not subject to the same scrutiny and standards that the core project is. So, **use it with caution and diligence** during its experimental phase.
 
 # Why Picocrypt?
 Why should you use Picocrypt instead of VeraCrypt, 7-Zip, BitLocker, or Cryptomator? Here are a few reasons why you should choose Picocrypt:
