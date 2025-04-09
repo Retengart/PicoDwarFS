@@ -2,7 +2,7 @@ package main
 
 /*
 
-Picocrypt v1.47
+Picocrypt v1.48
 Copyright (c) Evan Su
 Released under a GNU GPL v3 License
 https://github.com/Picocrypt/Picocrypt
@@ -60,7 +60,7 @@ var TRANSPARENT = color.RGBA{0x00, 0x00, 0x00, 0x00}
 
 // Generic variables
 var window *giu.MasterWindow
-var version = "v1.47"
+var version = "v1.48"
 var dpi float32
 var mode string
 var working bool
@@ -72,6 +72,8 @@ var showPassgen bool
 var showKeyfile bool
 var showOverwrite bool
 var showProgress bool
+var showDeleteConfirmation bool
+var deleteConfirmed bool
 
 // Input and output files
 var inputFile string
@@ -173,8 +175,151 @@ func (p *compressorProgress) Read(data []byte) (int, error) {
 	return read, err
 }
 
+// Check if the conditions are met to start processing
+func canStartProcessing() bool {
+	// Files must be selected and scanning must be finished
+	if (len(allFiles) == 0 && len(onlyFiles) == 0) || scanning {
+		return false
+	}
+	// Password or keyfiles must be provided
+	if password == "" && len(keyfiles) == 0 {
+		return false
+	}
+	// If encrypting, password and confirmation must match
+	if mode == "encrypt" && password != cpassword {
+		return false
+	}
+	// If splitting, size must be valid
+	if split {
+		tmp, err := strconv.Atoi(splitSize)
+		if splitSize == "" || tmp <= 0 || err != nil {
+			return false
+		}
+	}
+	// If processing is already running
+	if working {
+		return false
+	}
+	return true
+}
+
+// Start the encryption/decryption process
+func startProcessing() {
+	// If delete option is active and not confirmed, request confirmation
+	if delete && !deleteConfirmed {
+		showDeleteConfirmation = true
+		modalId++
+		giu.Update()
+		return
+	}
+	deleteConfirmed = false // Reset confirmation for next use
+
+	if keyfile && keyfiles == nil {
+		mainStatus = "Please select your keyfiles"
+		mainStatusColor = RED
+		return
+	}
+	tmp, err := strconv.Atoi(splitSize)
+	if split && (splitSize == "" || tmp <= 0 || err != nil) {
+		mainStatus = "Invalid chunk size"
+		mainStatusColor = RED
+		return
+	}
+
+	// Check if output file already exists
+	_, err = os.Stat(outputFile)
+
+	// Check if any split chunks already exist
+	if split {
+		names, _ := filepath.Glob(outputFile + ".*")
+		if len(names) > 0 {
+			err = nil
+		} else {
+			err = os.ErrNotExist
+		}
+	}
+
+	// If files already exist, show the overwrite modal
+	if err == nil && !recursively {
+		showOverwrite = true
+		modalId++
+		giu.Update()
+	} else { // Nothing to worry about, start working
+		showProgress = true
+		fastDecode = true
+		canCancel = true
+		modalId++
+		giu.Update()
+		if !recursively {
+			go func() {
+				work()
+				working = false
+				showProgress = false
+				giu.Update()
+			}()
+		} else {
+			// Store variables as they will be cleared
+			oldPassword := password
+			oldKeyfile := keyfile
+			oldKeyfiles := keyfiles
+			oldKeyfileOrdered := keyfileOrdered
+			oldKeyfileLabel := keyfileLabel
+			oldComments := comments
+			oldParanoid := paranoid
+			oldReedsolo := reedsolo
+			oldDeniability := deniability
+			oldSplit := split
+			oldSplitSize := splitSize
+			oldSplitSelected := splitSelected
+			oldDelete := delete
+			files := allFiles
+			go func() {
+				for _, file := range files {
+					// Simulate dropping the file
+					onDrop([]string{file})
+
+					// Restore variables and options
+					password = oldPassword
+					cpassword = oldPassword
+					keyfile = oldKeyfile
+					keyfiles = oldKeyfiles
+					keyfileOrdered = oldKeyfileOrdered
+					keyfileLabel = oldKeyfileLabel
+					comments = oldComments
+					paranoid = oldParanoid
+					reedsolo = oldReedsolo
+					deniability = oldDeniability
+					split = oldSplit
+					splitSize = oldSplitSize
+					splitSelected = oldSplitSelected
+					delete = oldDelete
+
+					work()
+					if !working {
+						resetUI()
+						cancel(nil, nil)
+						showProgress = false
+						giu.Update()
+						return
+					}
+				}
+				working = false
+				showProgress = false
+				giu.Update()
+			}()
+		}
+	}
+}
+
 // The main user interface
 func draw() {
+	// Handle Enter key press to start processing
+	if !imgui.IsAnyItemActive() && giu.IsKeyPressed(giu.KeyEnter) {
+		if canStartProcessing() {
+			startProcessing()
+		}
+	}
+
 	giu.SingleWindow().Flags(524351).Layout(
 		giu.Custom(func() {
 			if showPassgen {
@@ -300,6 +445,29 @@ func draw() {
 					giu.Label(popupStatus),
 				).Build()
 				giu.OpenPopup(" ##" + strconv.Itoa(modalId))
+				giu.Update()
+			}
+
+			if showDeleteConfirmation {
+				giu.PopupModal("Warning:##DeleteConfirm"+strconv.Itoa(modalId)).Flags(6).Layout(
+					giu.Label("Are you sure you want to delete the original files?"),
+					giu.Label("This action cannot be undone."),
+					giu.Dummy(0, 10),
+					giu.Row(
+						giu.Button("Cancel").Size(100, 0).OnClick(func() {
+							giu.CloseCurrentPopup()
+							showDeleteConfirmation = false
+							delete = false // Disable delete option
+						}),
+						giu.Button("Confirm").Size(100, 0).OnClick(func() {
+							giu.CloseCurrentPopup()
+							showDeleteConfirmation = false
+							deleteConfirmed = true
+							startProcessing() // Continue processing after confirmation
+						}),
+					),
+				).Build()
+				giu.OpenPopup("Warning:##DeleteConfirm" + strconv.Itoa(modalId))
 				giu.Update()
 			}
 		}),
@@ -517,8 +685,10 @@ func draw() {
 						giu.Checkbox("Reed-Solomon", &reedsolo),
 						giu.Tooltip("Prevent file corruption with erasure coding"),
 						giu.Dummy(-170, 0),
-						giu.Checkbox("Delete files", &delete),
-						giu.Tooltip("Delete the input files after encryption"),
+						giu.Row(
+							giu.Checkbox("Delete files", &delete),
+							giu.Tooltip("Delete the input files after encryption\nRequires confirmation before proceeding"),
+						),
 					).Build()
 
 					giu.Row(
@@ -551,8 +721,10 @@ func draw() {
 							giu.Tooltip("Override security measures when decrypting"),
 						),
 						giu.Dummy(-170, 0),
-						giu.Checkbox("Delete volume", &delete),
-						giu.Tooltip("Delete the volume after a successful decryption"),
+						giu.Row(
+							giu.Checkbox("Delete volume", &delete),
+							giu.Tooltip("Delete the volume after a successful decryption\nRequires confirmation before proceeding"),
+						),
 					).Build()
 
 					giu.Row(
@@ -648,108 +820,27 @@ func draw() {
 			giu.Dummy(0, 0),
 			giu.Separator(),
 			giu.Dummy(0, 0),
-			giu.Button(func() string {
-				if !recursively {
-					return startLabel
-				}
-				return "Process"
-			}()).Size(giu.Auto, 34).OnClick(func() {
-				if keyfile && keyfiles == nil {
-					mainStatus = "Please select your keyfiles"
-					mainStatusColor = RED
-					return
-				}
-				tmp, err := strconv.Atoi(splitSize)
-				if split && (splitSize == "" || tmp <= 0 || err != nil) {
-					mainStatus = "Invalid chunk size"
-					mainStatusColor = RED
-					return
-				}
-
-				// Check if output file already exists
-				_, err = os.Stat(outputFile)
-
-				// Check if any split chunks already exist
-				if split {
-					names, _ := filepath.Glob(outputFile + ".*")
-					if len(names) > 0 {
-						err = nil
-					} else {
-						err = os.ErrNotExist
-					}
-				}
-
-				// If files already exist, show the overwrite modal
-				if err == nil && !recursively {
-					showOverwrite = true
-					modalId++
-					giu.Update()
-				} else { // Nothing to worry about, start working
-					showProgress = true
-					fastDecode = true
-					canCancel = true
-					modalId++
-					giu.Update()
+			giu.Row(
+				giu.Button(func() string {
 					if !recursively {
-						go func() {
-							work()
-							working = false
-							showProgress = false
-							giu.Update()
-						}()
-					} else {
-						// Store variables as they will be cleared
-						oldPassword := password
-						oldKeyfile := keyfile
-						oldKeyfiles := keyfiles
-						oldKeyfileOrdered := keyfileOrdered
-						oldKeyfileLabel := keyfileLabel
-						oldComments := comments
-						oldParanoid := paranoid
-						oldReedsolo := reedsolo
-						oldDeniability := deniability
-						oldSplit := split
-						oldSplitSize := splitSize
-						oldSplitSelected := splitSelected
-						oldDelete := delete
-						files := allFiles
-						go func() {
-							for _, file := range files {
-								// Simulate dropping the file
-								onDrop([]string{file})
-
-								// Restore variables and options
-								password = oldPassword
-								cpassword = oldPassword
-								keyfile = oldKeyfile
-								keyfiles = oldKeyfiles
-								keyfileOrdered = oldKeyfileOrdered
-								keyfileLabel = oldKeyfileLabel
-								comments = oldComments
-								paranoid = oldParanoid
-								reedsolo = oldReedsolo
-								deniability = oldDeniability
-								split = oldSplit
-								splitSize = oldSplitSize
-								splitSelected = oldSplitSelected
-								delete = oldDelete
-
-								work()
-								if !working {
-									resetUI()
-									cancel(nil, nil)
-									showProgress = false
-									giu.Update()
-									return
-								}
-							}
-							working = false
-							showProgress = false
-							giu.Update()
-						}()
+						return startLabel
 					}
-				}
-			}),
+					return "Process"
+				}()).Size(giu.Auto, 34).OnClick(func() {
+					if canStartProcessing() {
+						startProcessing()
+					}
+				}),
+				giu.Custom(func() {
+					// Add a small dummy space
+					giu.Dummy(5, 0).Build()
+					giu.SameLine()
+					// Display the hint in gray
+					giu.Style().SetColor(giu.StyleColorText, color.RGBA{180, 180, 180, 255}).To(
+						giu.Label("or press Enter"),
+					).Build()
+				}),
+			),
 			giu.Style().SetColor(giu.StyleColorText, mainStatusColor).To(
 				giu.Label(mainStatus),
 			),
